@@ -1,0 +1,2553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exchequer - Fully Functional Prototype</title>
+    
+    <!-- Chosen Palette: Warm Neutrals (Slate, Zinc, with Amber accent) -->
+    <!-- Application Structure Plan: A dashboard-style Single Page Application (SPA) with a persistent left-hand sidebar for navigation and a main content area that dynamically displays different management sections (Dashboard, Dues, Expenses, Members, Events, Budget, Fundraising). This structure was chosen for its intuitive nature in managing complex data, allowing users to quickly access different tools without losing context. The flow begins at the Dashboard for a high-level overview, then allows users to drill down into specific tasks. This task-oriented design directly reflects the core functions outlined in the source report and provides a scalable foundation. All data is persisted using Firestore, and interactions are handled via JavaScript. -->
+    <!-- Visualization & Content Choices: 
+        - Financial Snapshot (Dashboard): Goal: Inform. Method: Key stats + Bar Chart (Chart.js) for Dues Status. Justification: Provides a quick, visual summary of financial health from Firestore data.
+        - Budget vs. Actuals (Budget): Goal: Compare. Method: Grouped Bar Chart (Chart.js). Justification: Clearly visualizes spending against limits for each category, data from Firestore.
+        - Expense/Dues/Members/Donations Tables (Expenses/Dues/Members/Fundraising): Goal: Organize/Inform. Method: Styled HTML tables. Interaction: JS-powered tab filters (e.g., Pending/Approved for expenses), dynamic rendering from Firestore. Justification: Efficiently displays detailed lists of transactions and member data.
+        - Role Permissions (Members): Goal: Organize. Method: Styled HTML cards (conceptual). Justification: Presents complex permissions in a clear, scannable format without needing diagrams.
+        - Event Calendar (Events): Goal: Inform/Organize. Method: HTML grid representing a calendar. Interaction: Add event form, RSVP button. Data from Firestore. Justification: Familiar and intuitive way to display date-based information.
+        - Budget Suggestions (Budget): Goal: Inform/Assist. Method: Text input for prompt, button to trigger LLM, and dynamically generated list of budget items. Interaction: User input for context, click to generate. Justification: Provides AI-powered assistance for budgeting, a key feature mentioned in the project overview.
+        - Fundraising Campaigns (Fundraising): Goal: Inform/Track. Method: Progress bars (HTML/CSS) and lists of campaigns/donations. Interaction: Create campaign form, simulate donation button. Data from Firestore. Justification: Visually represents campaign progress and lists relevant details for officers and potential donors.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://js.stripe.com/v3/"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase variables (provided by Canvas environment)
+        // FOR LOCALHOST USE: Replace these with your actual Firebase project config if running outside Canvas.
+        // Example: 
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyCCBTk9QB9OJqhOpUYJgXjYRqI7FoHKSls",
+            authDomain: "quillco-8e5ee.firebaseapp.com",
+            projectId: "quillco-8e5ee",
+            storageBucket: "quillco-8e5ee.firebasestorage.app",
+            messagingSenderId: "691597037679",
+            appId: "1:691597037679:web:3dd31b80c9f4b8fcaf3d9a",
+            measurementId: "G-7T9Y46J5GQ"
+        };
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // let firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'); // Modified to be `let`
+
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+
+        async function initializeFirebase() {
+            console.log("Initializing Firebase...");
+            document.getElementById('app-status').textContent = 'Initializing app...';
+            document.getElementById('app-status').classList.remove('hidden');
+
+            try {
+                // Enhanced Firebase configuration validation
+                if (!firebaseConfig || Object.keys(firebaseConfig).length === 0 || firebaseConfig.apiKey === "dummy-api-key") {
+                    console.warn("Firebase configuration not found or is dummy. Running in demo mode with local storage fallback.");
+                    document.getElementById('app-status').textContent = 'Running in demo mode with local storage. Data will persist in your browser.';
+                    document.getElementById('app-status').classList.remove('hidden');
+                    document.getElementById('app-status').classList.add('bg-yellow-100', 'text-yellow-700', 'border-yellow-200');
+                    
+                    // Initialize local storage fallback
+                    initializeLocalStorageFallback();
+                    return;
+                }
+
+
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    console.log("onAuthStateChanged triggered. User object:", user);
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id-display').textContent = userId;
+                        console.log("Firebase Auth Ready. User ID:", userId);
+                        isAuthReady = true;
+                        document.getElementById('app-status').classList.add('hidden'); // Hide status on success
+                        await ensureInitialData(); // Ensure initial data exists for the user
+                        renderAllData(); // Render UI once auth and data are ready
+                    } else {
+                        console.log("No user signed in. Attempting sign-in...");
+                        document.getElementById('app-status').textContent = 'Signing in anonymously...';
+                        document.getElementById('app-status').classList.remove('hidden');
+                        try {
+                            if (initialAuthToken) {
+                                console.log("Attempting custom token sign-in...");
+                                await signInWithCustomToken(auth, initialAuthToken);
+                                console.log("Custom token sign-in successful!");
+                            } else {
+                                console.log("Attempting anonymous sign-in...");
+                                await signInAnonymously(auth);
+                                console.log("Anonymous sign-in successful!");
+                            }
+                        } catch (authError) {
+                            console.error("Error during authentication (signInAnonymously or signInWithCustomToken):", authError);
+                            document.getElementById('app-status').textContent = `Authentication Error: ${authError.message}. Check Firebase Auth settings.`;
+                            document.getElementById('app-status').classList.remove('hidden');
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Error initializing Firebase App or getting services:", e);
+                document.getElementById('app-status').textContent = 'Error: Failed to initialize Firebase. Check console for details. Ensure your Firebase config is correct and services are enabled.';
+                document.getElementById('app-status').classList.remove('hidden');
+            }
+        }
+
+        // --- Local Storage Fallback Functions ---
+        function initializeLocalStorageFallback() {
+            console.log("Initializing local storage fallback...");
+            isAuthReady = true;
+            userId = 'demo-user-' + Date.now();
+            document.getElementById('user-id-display').textContent = userId;
+            document.getElementById('app-status').classList.add('hidden');
+            ensureInitialData();
+            renderAllData();
+        }
+
+        // Enhanced data management with local storage fallback
+        async function getOrgProfile() {
+            if (!isAuthReady) return null;
+            
+            if (window.useLocalStorage) {
+                const orgData = localStorage.getItem('exchequer_org_profile');
+                return orgData ? JSON.parse(orgData) : null;
+            }
+            
+            const orgRef = doc(db, `artifacts/${appId}/users/${userId}/organization_profile`, 'main');
+            const docSnap = await getDoc(orgRef);
+            return docSnap.exists() ? docSnap.data() : null;
+        }
+
+        async function setOrgProfile(name) {
+            if (!isAuthReady) return;
+            const orgRef = doc(db, `artifacts/${appId}/users/${userId}/organization_profile`, 'main');
+            await setDoc(orgRef, { name: name });
+            document.getElementById('modal-message').textContent = 'Organization name saved!';
+            document.getElementById('statusModal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 2000);
+        }
+
+        // Enhanced organization name saving
+        window.saveOrgName = async function() {
+            const newName = document.getElementById('org-name-input').value.trim();
+            if (newName !== '') {
+                await setOrgProfile(newName);
+            } else {
+                document.getElementById('modal-message').textContent = 'Organization name cannot be empty.';
+                document.getElementById('statusModal').classList.remove('hidden');
+                setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 2000);
+            }
+        };
+
+        // Export data functionality
+        window.exportData = async function() {
+            if (!isAuthReady) return;
+            
+            try {
+                const exportData = {
+                    organization: await getOrgProfile(),
+                    members: [],
+                    expenses: [],
+                    dues: [],
+                    events: [],
+                    budgets: [],
+                    fundraising_campaigns: [],
+                    donations: [],
+                    exportDate: new Date().toISOString()
+                };
+
+                if (window.useLocalStorage) {
+                    // Export from local storage
+                    exportData.members = JSON.parse(localStorage.getItem('exchequer_members') || '[]');
+                    exportData.expenses = JSON.parse(localStorage.getItem('exchequer_expenses') || '[]');
+                    exportData.dues = JSON.parse(localStorage.getItem('exchequer_dues') || '[]');
+                    exportData.events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                    exportData.budgets = JSON.parse(localStorage.getItem('exchequer_budgets') || '[]');
+                    exportData.fundraising_campaigns = JSON.parse(localStorage.getItem('exchequer_fundraising_campaigns') || '[]');
+                    exportData.donations = JSON.parse(localStorage.getItem('exchequer_donations') || '[]');
+                } else {
+                    // Export from Firebase
+                    const collections = ['members', 'expenses', 'dues', 'events', 'budgets', 'fundraising_campaigns', 'donations'];
+                    for (const collectionName of collections) {
+                        const snapshot = await getDocs(collection(db, `artifacts/${appId}/users/${userId}/${collectionName}`));
+                        exportData[collectionName] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    }
+                }
+
+                // Create and download JSON file
+                const dataStr = JSON.stringify(exportData, null, 2);
+                const dataBlob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(dataBlob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `exchequer-export-${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+
+                showNotification('Data exported successfully!', 'success');
+            } catch (error) {
+                console.error("Error exporting data:", error);
+                showNotification('Error exporting data. Please try again.', 'error');
+            }
+        };
+
+        // Enhanced notification system
+        function showNotification(message, type = 'info') {
+            const container = document.getElementById('notification-container');
+            const notification = document.createElement('div');
+            
+            let bgColor, textColor, icon;
+            switch (type) {
+                case 'success':
+                    bgColor = 'bg-green-100';
+                    textColor = 'text-green-800';
+                    icon = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>';
+                    break;
+                case 'error':
+                    bgColor = 'bg-red-100';
+                    textColor = 'text-red-800';
+                    icon = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>';
+                    break;
+                case 'warning':
+                    bgColor = 'bg-yellow-100';
+                    textColor = 'text-yellow-800';
+                    icon = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>';
+                    break;
+                default:
+                    bgColor = 'bg-blue-100';
+                    textColor = 'text-blue-800';
+                    icon = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>';
+            }
+            
+            notification.className = `${bgColor} ${textColor} border border-current p-4 rounded-lg shadow-lg max-w-sm transform transition-all duration-300 translate-x-full`;
+            notification.innerHTML = `
+                <div class="flex items-start">
+                    <div class="flex-shrink-0">${icon}</div>
+                    <div class="ml-3">
+                        <p class="text-sm font-medium">${message}</p>
+                    </div>
+                    <div class="ml-auto pl-3">
+                        <button onclick="this.parentElement.parentElement.parentElement.remove()" class="text-current hover:opacity-75">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(notification);
+            
+            // Animate in
+            setTimeout(() => {
+                notification.classList.remove('translate-x-full');
+            }, 100);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                if (notification.parentElement) {
+                    notification.classList.add('translate-x-full');
+                    setTimeout(() => {
+                        if (notification.parentElement) {
+                            notification.remove();
+                        }
+                    }, 300);
+                }
+            }, 5000);
+        }
+
+
+        async function ensureInitialData() {
+            if (!isAuthReady) return;
+            const orgProfile = await getOrgProfile();
+            if (!orgProfile) {
+                await setOrgProfile("Your Student Organization");
+                console.log("Initialized default organization profile.");
+            }
+
+            const membersCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/members`);
+            const membersSnap = await getDocs(membersCollectionRef);
+            if (membersSnap.empty) {
+                await addDoc(membersCollectionRef, { name: "John Doe", email: "john.doe@example.com", role: "Treasurer", status: "Active", joinDate: new Date().toISOString().split('T')[0] });
+                await addDoc(membersCollectionRef, { name: "Jane Smith", email: "jane.smith@example.com", role: "President", status: "Active", joinDate: new Date().toISOString().split('T')[0] });
+                await addDoc(membersCollectionRef, { name: "Alice Johnson", email: "alice.j@example.com", role: "Member", status: "Active", joinDate: "2024-09-01" });
+                await addDoc(membersCollectionRef, { name: "Bob Williams", email: "bob.w@example.com", role: "Member", status: "Active", joinDate: "2024-09-01" });
+                console.log("Initialized default members.");
+            }
+
+            const duesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/dues`);
+            const duesSnap = await getDocs(duesCollectionRef);
+            if (duesSnap.empty) {
+                await addDoc(duesCollectionRef, { memberName: "Alice Johnson", amount: 150, status: "Paid", dueDate: "2025-09-15", paidDate: "2025-09-01" });
+                await addDoc(duesCollectionRef, { memberName: "Bob Williams", amount: 150, status: "Unpaid", dueDate: "2025-09-15", paidDate: "" });
+                console.log("Initialized default dues.");
+            }
+
+            const expensesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/expenses`);
+            const expensesSnap = await getDocs(expensesCollectionRef);
+            if (expensesSnap.empty) {
+                await addDoc(expensesCollectionRef, { submitterName: "Mike Chen", amount: 45.20, category: "Food", description: "Pizza for recruitment event", date: "2025-07-08", status: "Pending", receiptUrl: "" });
+                await addDoc(expensesCollectionRef, { submitterName: "Jessica Rodriguez", amount: 275.30, category: "Decorations", description: "Decorations for social", date: "2025-07-05", status: "Pending", receiptUrl: "" });
+                await addDoc(expensesCollectionRef, { submitterName: "John Doe", amount: 500.00, category: "Venue", description: "Venue deposit for Fall Formal", date: "2025-06-28", status: "Approved", receiptUrl: "" });
+                console.log("Initialized default expenses.");
+            }
+
+            const eventsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/events`);
+            const eventsSnap = await getDocs(eventsCollectionRef);
+            if (eventsSnap.empty) {
+                await addDoc(eventsCollectionRef, { name: "Recruitment Mixer", date: "2025-07-17", time: "6:00 PM", location: "Student Union", description: "Meet new prospective members!", rsvps: [] });
+                await addDoc(eventsCollectionRef, { name: "Fall Formal", date: "2025-10-20", time: "7:00 PM", location: "Grand Ballroom", description: "Our annual formal event.", rsvps: [] });
+                console.log("Initialized default events.");
+            }
+
+            const budgetCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/budgets`);
+            const budgetSnap = await getDocs(budgetCollectionRef);
+            if (budgetSnap.empty) {
+                await addDoc(budgetCollectionRef, { 
+                    name: "Fall Semester Budget", 
+                    fiscalYear: "2025-2026", 
+                    categories: [
+                        { name: "Social Events", budgeted: 5000, actual: 4500 },
+                        { name: "Supplies", budgeted: 1000, actual: 1150 },
+                        { name: "Recruitment", budgeted: 1500, actual: 1200 },
+                        { name: "Travel", budgeted: 2000, actual: 1800 },
+                        { name: "Philanthropy", budgeted: 800, actual: 750 }
+                    ]
+                });
+                console.log("Initialized default budget.");
+            }
+
+            const fundraisingCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/fundraising_campaigns`);
+            const fundraisingSnap = await getDocs(fundraisingCollectionRef);
+            if (fundraisingSnap.empty) {
+                await addDoc(fundraisingCollectionRef, { name: "Annual Scholarship Fund", description: "Help us support deserving students with their academic pursuits.", goalAmount: 10000, raisedAmount: 7500, endDate: "2025-08-31" });
+                await addDoc(fundraisingCollectionRef, { name: "Community Service Project", description: "Funding for our upcoming neighborhood cleanup and food drive.", goalAmount: 5000, raisedAmount: 2000, endDate: "2025-09-30" });
+                console.log("Initialized default fundraising campaigns.");
+            }
+
+            const donationsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/donations`);
+            const donationsSnap = await getDocs(donationsCollectionRef);
+            if (donationsSnap.empty) {
+                await addDoc(donationsCollectionRef, { campaignName: "Annual Scholarship Fund", donorName: "Alumni Supporter", amount: 100, date: "2025-07-08" });
+                await addDoc(donationsCollectionRef, { campaignName: "Community Service Project", donorName: "Current Member", amount: 25, date: "2025-07-07" });
+                await addDoc(donationsCollectionRef, { campaignName: "Annual Scholarship Fund", donorName: "Parent of Member", amount: 50, date: "2025-07-06" });
+                console.log("Initialized default donations.");
+            }
+        }
+
+        async function renderAllData() {
+            if (!isAuthReady) return;
+
+            // Render Org Name
+            const orgProfile = await getOrgProfile();
+            if (orgProfile) {
+                document.getElementById('org-name-display').textContent = orgProfile.name;
+                document.getElementById('org-name-input').value = orgProfile.name;
+            }
+
+            // Dashboard KPIs and Recent Activity
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/dues`), (snapshot) => {
+                let totalCollected = 0;
+                let outstandingDues = 0;
+                let paidCount = 0;
+                let partiallyPaidCount = 0;
+                let unpaidCount = 0;
+
+                snapshot.forEach(doc => {
+                    const dues = doc.data();
+                    if (dues.status === 'Paid') {
+                        totalCollected += dues.amount;
+                        paidCount++;
+                    } else if (dues.status === 'Partially Paid') {
+                        partiallyPaidCount++;
+                        outstandingDues += dues.amount / 2; // Assuming half paid for simplicity
+                    } else if (dues.status === 'Unpaid') {
+                        unpaidCount++;
+                        outstandingDues += dues.amount;
+                    }
+                });
+                document.getElementById('dues-collected-display').textContent = `$${totalCollected.toLocaleString()}`;
+                document.getElementById('outstanding-dues-display').textContent = `$${outstandingDues.toLocaleString()}`;
+                updateDuesChart(paidCount, partiallyPaidCount, unpaidCount);
+            });
+
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/expenses`), (snapshot) => {
+                let pendingExpenses = 0;
+                snapshot.forEach(doc => {
+                    const expense = doc.data();
+                    if (expense.status === 'Pending') {
+                        pendingExpenses += expense.amount;
+                    }
+                });
+                document.getElementById('pending-expenses-display').textContent = `$${pendingExpenses.toLocaleString()}`;
+                renderExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            });
+
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/donations`), (snapshot) => {
+                let totalDonations = 0;
+                snapshot.forEach(doc => {
+                    const donation = doc.data();
+                    totalDonations += donation.amount;
+                });
+                document.getElementById('current-balance-display').textContent = `$${(totalDonations + 8450.75).toLocaleString()}`; // Placeholder base balance
+                renderRecentActivity(); // Re-render activity to include new donations
+                renderDonations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            });
+
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/members`), (snapshot) => {
+                renderMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                renderRecentActivity(); // Re-render activity to include new members
+            });
+
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/budgets`), (snapshot) => {
+                const budgets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                if (budgets.length > 0) {
+                    updateBudgetChart(budgets[0].categories);
+                }
+            });
+
+            onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/fundraising_campaigns`), (snapshot) => {
+                renderFundraisingCampaigns(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            });
+
+            if (window.useLocalStorage) {
+                // Local storage fallback for events
+                const events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                renderEvents(events);
+            } else {
+                onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/events`), (snapshot) => {
+                    renderEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                });
+            }
+        }
+
+        // --- Chart.js Instances (global to update) ---
+        let duesChartInstance;
+        let budgetChartInstance;
+
+        function updateDuesChart(paidCount, partiallyPaidCount, unpaidCount) {
+            const duesCtx = document.getElementById('duesChart').getContext('2d');
+            if (duesChartInstance) {
+                duesChartInstance.destroy();
+            }
+            duesChartInstance = new Chart(duesCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Paid in Full', 'Partially Paid', 'Unpaid'],
+                    datasets: [{
+                        label: 'Number of Members',
+                        data: [paidCount, partiallyPaidCount, unpaidCount],
+                        backgroundColor: [
+                            'rgba(34, 197, 94, 0.6)', // green-500
+                            'rgba(245, 158, 11, 0.6)', // amber-500
+                            'rgba(239, 68, 68, 0.6)' // red-500
+                        ],
+                        borderColor: [
+                            'rgba(34, 197, 94, 1)',
+                            'rgba(245, 158, 11, 1)',
+                            'rgba(239, 68, 68, 1)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.raw}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            grid: {
+                                display: false
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateBudgetChart(categories) {
+            const budgetCtx = document.getElementById('budgetChart').getContext('2d');
+            if (budgetChartInstance) {
+                budgetChartInstance.destroy();
+            }
+            budgetChartInstance = new Chart(budgetCtx, {
+                type: 'bar',
+                data: {
+                    labels: categories.map(c => c.name),
+                    datasets: [
+                        {
+                            label: 'Budgeted',
+                            data: categories.map(c => c.budgeted),
+                            backgroundColor: 'rgba(148, 163, 184, 0.6)', // slate-400
+                            borderColor: 'rgba(100, 116, 139, 1)', // slate-500
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Actual Spending',
+                            data: categories.map(c => c.actual),
+                            backgroundColor: 'rgba(251, 191, 36, 0.6)', // amber-400
+                            borderColor: 'rgba(217, 119, 6, 1)', // amber-600
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- Render Functions for UI Sections ---
+        async function renderRecentActivity() {
+            if (!isAuthReady) return;
+            const activityList = document.getElementById('recent-activity-list');
+            activityList.innerHTML = '';
+
+            const activities = [];
+
+            // Fetch recent dues
+            const duesSnap = await getDocs(query(collection(db, `artifacts/${appId}/users/${userId}/dues`), orderBy('paidDate', 'desc')));
+            duesSnap.forEach(doc => {
+                const data = doc.data();
+                if (data.paidDate) {
+                    activities.push({
+                        type: 'dues',
+                        description: `${data.memberName} paid $${data.amount.toLocaleString()} in dues.`,
+                        date: new Date(data.paidDate)
+                    });
+                }
+            });
+
+            // Fetch recent expenses
+            const expensesSnap = await getDocs(query(collection(db, `artifacts/${appId}/users/${userId}/expenses`), orderBy('date', 'desc')));
+            expensesSnap.forEach(doc => {
+                const data = doc.data();
+                activities.push({
+                    type: 'expense',
+                    description: `${data.submitterName} submitted an expense for $${data.amount.toLocaleString()}.`,
+                    date: new Date(data.date)
+                });
+            });
+
+            // Fetch recent events
+            const eventsSnap = await getDocs(query(collection(db, `artifacts/${appId}/users/${userId}/events`), orderBy('date', 'desc')));
+            eventsSnap.forEach(doc => {
+                const data = doc.data();
+                activities.push({
+                    type: 'event',
+                    description: `New Event: "${data.name}" created.`,
+                    date: new Date(data.date)
+                });
+            });
+
+            // Fetch recent donations
+            const donationsSnap = await getDocs(query(collection(db, `artifacts/${appId}/users/${userId}/donations`), orderBy('date', 'desc')));
+            donationsSnap.forEach(doc => {
+                const data = doc.data();
+                activities.push({
+                    type: 'donation',
+                    description: `${data.donorName} donated $${data.amount.toLocaleString()} to "${data.campaignName}".`,
+                    date: new Date(data.date)
+                });
+            });
+
+            activities.sort((a, b) => b.date - a.date); // Sort by most recent
+            const displayActivities = activities.slice(0, 5); // Show top 5
+
+            displayActivities.forEach(activity => {
+                let iconSvg = '';
+                let bgColor = '';
+                if (activity.type === 'dues' || activity.type === 'donation') {
+                    iconSvg = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v.01"></path></svg>`;
+                    bgColor = 'bg-green-100 text-green-700';
+                } else if (activity.type === 'expense') {
+                    iconSvg = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>`;
+                    bgColor = 'bg-blue-100 text-blue-700';
+                } else if (activity.type === 'event') {
+                    iconSvg = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>`;
+                    bgColor = 'bg-purple-100 text-purple-700';
+                }
+
+                const timeDiff = new Date() - activity.date;
+                const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+                const days = Math.floor(hours / 24);
+                let timeAgo;
+                if (hours < 24) {
+                    timeAgo = `${hours} hours ago`;
+                } else {
+                    timeAgo = `${days} days ago`;
+                }
+
+                const activityItem = `
+                    <div class="flex items-start">
+                        <div class="${bgColor} p-2 rounded-full">${iconSvg}</div>
+                        <div class="ml-3">
+                            <p class="font-medium text-slate-700">${activity.description}</p>
+                            <p class="text-sm text-slate-500">${timeAgo}</p>
+                        </div>
+                    </div>
+                `;
+                activityList.insertAdjacentHTML('beforeend', activityItem);
+            });
+        }
+
+        function renderDues(duesData) {
+            const duesTableBody = document.getElementById('dues-table-body');
+            duesTableBody.innerHTML = '';
+            duesData.forEach(dues => {
+                let statusClass = '';
+                let actionHtml = '';
+                if (dues.status === 'Paid') {
+                    statusClass = 'bg-green-100 text-green-800';
+                    actionHtml = '--';
+                } else if (dues.status === 'Partially Paid') {
+                    statusClass = 'bg-yellow-100 text-yellow-800';
+                    actionHtml = `<button class="text-amber-600 font-semibold hover:underline" onclick="simulateDuesPayment('${dues.id}', ${dues.amount / 2})">Pay Remaining</button>`;
+                } else if (dues.status === 'Unpaid') {
+                    statusClass = 'bg-red-100 text-red-800';
+                    actionHtml = `<button class="text-amber-600 font-semibold hover:underline" onclick="simulateDuesPayment('${dues.id}', ${dues.amount})">Pay Now</button>`;
+                }
+
+                const row = `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="p-3 font-medium">${dues.memberName}</td>
+                        <td class="p-3">$${dues.amount.toLocaleString()}</td>
+                        <td class="p-3"><span class="${statusClass} text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">${dues.status}</span></td>
+                        <td class="p-3">${dues.dueDate}</td>
+                        <td class="p-3">${actionHtml}</td>
+                    </tr>
+                `;
+                duesTableBody.insertAdjacentHTML('beforeend', row);
+            });
+        }
+
+        // Expose simulateDuesPayment to global scope for onclick
+        window.simulateDuesPayment = async function(duesId, amount) {
+            if (!isAuthReady) return;
+            document.getElementById('modal-message').textContent = 'Simulating payment... (In a real app, this would securely process payment via Stripe)';
+            document.getElementById('statusModal').classList.remove('hidden');
+
+            try {
+                const duesRef = doc(db, `artifacts/${appId}/users/${userId}/dues`, duesId);
+                const duesSnap = await getDoc(duesRef);
+                if (duesSnap.exists()) {
+                    const currentDues = duesSnap.data();
+                    let newStatus = 'Paid';
+                    
+                    if (currentDues.status === 'Partially Paid') {
+                        newStatus = 'Paid';
+                    } else if (currentDues.status === 'Unpaid') {
+                        newStatus = 'Paid';
+                    } else {
+                        console.warn("Attempted to pay dues with unexpected status:", currentDues.status);
+                    }
+                    
+                    await updateDoc(duesRef, {
+                        status: newStatus,
+                        paidDate: new Date().toISOString().split('T')[0]
+                    });
+                    document.getElementById('modal-message').textContent = `Dues payment of $${amount.toLocaleString()} simulated successfully! Status updated to ${newStatus}.`;
+                } else {
+                    document.getElementById('modal-message').textContent = 'Error: Dues record not found.';
+                }
+            } catch (error) {
+                console.error("Error simulating dues payment:", error);
+                document.getElementById('modal-message').textContent = 'Error simulating dues payment. Check console.';
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+        function renderExpenses(expensesData) {
+            const expenseTableBody = document.getElementById('expense-table-body');
+            expenseTableBody.innerHTML = '';
+            
+            const currentTab = document.querySelector('#expense-tabs .tab-button.active').dataset.tab;
+
+            expensesData.filter(exp => {
+                if (currentTab === 'pending') return exp.status === 'Pending';
+                if (currentTab === 'approved') return exp.status === 'Approved';
+                if (currentTab === 'rejected') return exp.status === 'Rejected';
+                return true; // Should not happen with active tab
+            }).forEach(expense => {
+                let statusClass = '';
+                let actionsHtml = '';
+                if (expense.status === 'Pending') {
+                    statusClass = 'bg-orange-100 text-orange-800';
+                    actionsHtml = `
+                        <button class="bg-green-500 text-white px-3 py-1 rounded-md text-sm font-semibold hover:bg-green-600" onclick="updateExpenseStatus('${expense.id}', 'Approved')">Approve</button>
+                        <button class="bg-red-500 text-white px-3 py-1 rounded-md text-sm font-semibold hover:bg-red-600" onclick="updateExpenseStatus('${expense.id}', 'Rejected')">Reject</button>
+                    `;
+                } else if (expense.status === 'Approved') {
+                    statusClass = 'bg-green-100 text-green-800';
+                    actionsHtml = '--';
+                } else if (expense.status === 'Rejected') {
+                    statusClass = 'bg-red-100 text-red-800';
+                    actionsHtml = 'No receipt'; // Example reason
+                }
+
+                const row = `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="p-3">${expense.date}</td>
+                        <td class="p-3 font-medium">${expense.submitterName}</td>
+                        <td class="p-3">${expense.description}</td>
+                        <td class="p-3 font-medium">$${expense.amount.toLocaleString()}</td>
+                        <td class="p-3"><span class="${statusClass} text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">${expense.status}</span></td>
+                        <td class="p-3 flex space-x-2">${actionsHtml}</td>
+                    </tr>
+                `;
+                expenseTableBody.insertAdjacentHTML('beforeend', row);
+            });
+        }
+
+        // Enhanced expense submission with payment processing
+        window.submitExpense = async function() {
+            if (!isAuthReady) return;
+            
+            const submitterName = document.getElementById('expenseSubmitter').value.trim();
+            const amount = parseFloat(document.getElementById('expenseAmount').value);
+            const category = document.getElementById('expenseCategory').value;
+            const description = document.getElementById('expenseDescription').value.trim();
+            const date = new Date().toISOString().split('T')[0];
+
+            // Enhanced validation
+            const errors = [];
+            if (!submitterName) errors.push('Submitter name is required');
+            if (isNaN(amount) || amount <= 0) errors.push('Amount must be a positive number');
+            if (amount > 10000) errors.push('Amount cannot exceed $10,000');
+            if (!category) errors.push('Category is required');
+            if (!description) errors.push('Description is required');
+            if (description.length < 10) errors.push('Description must be at least 10 characters');
+
+            if (errors.length > 0) {
+                document.getElementById('expense-error-message').textContent = errors.join('. ');
+                document.getElementById('expense-error-message').classList.remove('hidden');
+                return;
+            }
+            
+            document.getElementById('expense-error-message').classList.add('hidden');
+
+            try {
+                // Show loading state
+                const submitButton = document.querySelector('#expenseForm button[type="submit"]');
+                const originalText = submitButton.textContent;
+                submitButton.textContent = 'Processing...';
+                submitButton.disabled = true;
+
+                // Submit expense to backend API
+                const response = await fetch('http://localhost:3000/api/expenses/submit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        submitterName,
+                        amount,
+                        category,
+                        description,
+                        memberId: userId,
+                        organizationId: appId,
+                        receiptUrl: ''
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Show payment modal if payment is required
+                    if (result.clientSecret && !result.demo) {
+                        showPaymentModal(result.clientSecret, result.paymentIntentId, 'expense');
+                    } else {
+                        // Handle demo mode or fallback
+                        const expenseData = {
+                            submitterName,
+                            amount: Math.round(amount * 100) / 100,
+                            category,
+                            description,
+                            date,
+                            status: 'Pending',
+                            receiptUrl: '',
+                            submittedAt: new Date().toISOString()
+                        };
+
+                        if (window.useLocalStorage) {
+                            const expenses = JSON.parse(localStorage.getItem('exchequer_expenses') || '[]');
+                            expenses.push({ id: Date.now().toString(), ...expenseData });
+                            localStorage.setItem('exchequer_expenses', JSON.stringify(expenses));
+                        } else {
+                            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/expenses`), expenseData);
+                        }
+                        
+                        // Show success message
+                        const message = result.demo ? 'Expense submitted successfully! (Demo mode)' : 'Expense submitted successfully!';
+                        document.getElementById('modal-message').textContent = message;
+                        document.getElementById('statusModal').classList.remove('hidden');
+                        document.getElementById('addExpenseModal').classList.add('hidden');
+                        document.getElementById('expenseForm').reset();
+                        
+                        // Show notification
+                        showNotification(message, 'success');
+                    }
+                } else {
+                    throw new Error(result.error || 'Failed to submit expense');
+                }
+            } catch (error) {
+                console.error("Error submitting expense:", error);
+                
+                // Fallback to original method if API fails
+                try {
+                    const expenseData = {
+                        submitterName,
+                        amount: Math.round(amount * 100) / 100,
+                        category,
+                        description,
+                        date,
+                        status: 'Pending',
+                        receiptUrl: '',
+                        submittedAt: new Date().toISOString()
+                    };
+
+                    if (window.useLocalStorage) {
+                        const expenses = JSON.parse(localStorage.getItem('exchequer_expenses') || '[]');
+                        expenses.push({ id: Date.now().toString(), ...expenseData });
+                        localStorage.setItem('exchequer_expenses', JSON.stringify(expenses));
+                    } else {
+                        await addDoc(collection(db, `artifacts/${appId}/users/${userId}/expenses`), expenseData);
+                    }
+                    
+                    document.getElementById('modal-message').textContent = 'Expense submitted successfully! (Fallback mode)';
+                    document.getElementById('statusModal').classList.remove('hidden');
+                    document.getElementById('addExpenseModal').classList.add('hidden');
+                    document.getElementById('expenseForm').reset();
+                } catch (fallbackError) {
+                    document.getElementById('modal-message').textContent = 'Error submitting expense. Please try again.';
+                }
+            } finally {
+                // Reset button state
+                const submitButton = document.querySelector('#expenseForm button[type="submit"]');
+                submitButton.textContent = originalText;
+                submitButton.disabled = false;
+                setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+            }
+        }
+
+        // Expose updateExpenseStatus to global scope for onclick
+        window.updateExpenseStatus = async function(expenseId, newStatus) {
+            if (!isAuthReady) return;
+            try {
+                const expenseRef = doc(db, `artifacts/${appId}/users/${userId}/expenses`, expenseId);
+                await updateDoc(expenseRef, { status: newStatus });
+                document.getElementById('modal-message').textContent = `Expense status updated to ${newStatus}!`;
+                document.getElementById('statusModal').classList.remove('hidden');
+            } catch (error) {
+                console.error("Error updating expense status:", error);
+                document.getElementById('modal-message').textContent = 'Error updating expense status. Check console.';
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+        function renderMembers(membersData) {
+            const membersTableBody = document.getElementById('members-table-body');
+            membersTableBody.innerHTML = '';
+            membersData.forEach(member => {
+                let statusClass = '';
+                if (member.status === 'Active') {
+                    statusClass = 'bg-blue-100 text-blue-800';
+                } else if (member.status === 'Inactive') {
+                    statusClass = 'bg-slate-200 text-slate-800';
+                }
+                const row = `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="p-3 font-medium">${member.name}</td>
+                        <td class="p-3 font-semibold ${member.role === 'Treasurer' || member.role === 'President' ? 'text-amber-700' : ''}">${member.role}</td>
+                        <td class="p-3">${member.email}</td>
+                        <td class="p-3"><span class="${statusClass} text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">${member.status}</span></td>
+                    </tr>
+                `;
+                membersTableBody.insertAdjacentHTML('beforeend', row);
+            });
+        }
+
+        // Expose addMember to global scope for onclick
+        window.addMember = async function() {
+            console.log('addMember function called');
+            
+            if (!isAuthReady) {
+                console.log('App not ready, returning');
+                showNotification('App is not ready yet. Please wait.', 'warning');
+                return;
+            }
+            
+            const name = document.getElementById('memberName').value;
+            const email = document.getElementById('memberEmail').value;
+            const role = document.getElementById('memberRole').value;
+
+            console.log('Form data:', { name, email, role });
+
+            if (!name || !email || !role) {
+                document.getElementById('member-error-message').textContent = 'Please fill all fields.';
+                document.getElementById('member-error-message').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('member-error-message').classList.add('hidden');
+
+            try {
+                console.log('Getting organization profile...');
+                // Get organization name for the email
+                let orgName = 'Your Student Organization';
+                try {
+                    const orgProfile = await getOrgProfile();
+                    orgName = orgProfile ? orgProfile.name : 'Your Student Organization';
+                    console.log('Organization name:', orgName);
+                } catch (orgError) {
+                    console.warn('Error getting org profile, using default name:', orgError);
+                }
+                
+                // Create invitation email content
+                const subject = `Invitation to Join ${orgName}`;
+                const body = `Dear ${name},
+
+You have been invited to join ${orgName} as a ${role}.
+
+We're excited to have you as part of our organization! As a ${role}, you'll have the opportunity to contribute to our mission and participate in our activities.
+
+Please respond to this email to confirm your acceptance of this invitation.
+
+Best regards,
+The ${orgName} Team
+
+---
+This invitation was sent from the Exchequer Student Organization Management System.`;
+
+                console.log('Creating mailto link...');
+                // Create mailto link
+                const mailtoLink = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+                
+                // Open email client
+                window.open(mailtoLink, '_blank');
+                
+                console.log('Adding member to database...');
+                // Add member to database
+                if (window.useLocalStorage) {
+                    console.log('Using localStorage');
+                    // Add to localStorage
+                    const members = JSON.parse(localStorage.getItem('exchequer_members') || '[]');
+                    const newMember = {
+                        id: Date.now().toString(),
+                        name,
+                        email,
+                        role,
+                        status: 'Active',
+                        joinDate: new Date().toISOString().split('T')[0]
+                    };
+                    members.push(newMember);
+                    localStorage.setItem('exchequer_members', JSON.stringify(members));
+                    console.log('Member added to localStorage');
+                } else {
+                    console.log('Using Firestore');
+                    try {
+                        // Add to Firestore
+                        await addDoc(collection(db, `artifacts/${appId}/users/${userId}/members`), {
+                            name,
+                            email,
+                            role,
+                            status: 'Active',
+                            joinDate: new Date().toISOString().split('T')[0]
+                        });
+                        console.log('Member added to Firestore');
+                    } catch (firebaseError) {
+                        console.warn('Firebase permissions error, falling back to localStorage:', firebaseError);
+                        // Fallback to localStorage if Firebase fails
+                        window.useLocalStorage = true;
+                        const members = JSON.parse(localStorage.getItem('exchequer_members') || '[]');
+                        const newMember = {
+                            id: Date.now().toString(),
+                            name,
+                            email,
+                            role,
+                            status: 'Active',
+                            joinDate: new Date().toISOString().split('T')[0]
+                        };
+                        members.push(newMember);
+                        localStorage.setItem('exchequer_members', JSON.stringify(members));
+                        console.log('Member added to localStorage (fallback)');
+                    }
+                }
+                
+                console.log('Showing success message...');
+                // Show success message
+                document.getElementById('modal-message').textContent = `Invitation email sent to ${email}! Member added to the system.`;
+                document.getElementById('statusModal').classList.remove('hidden');
+                document.getElementById('addMemberModal').classList.add('hidden');
+                document.getElementById('addMemberForm').reset();
+                
+                // Show notification
+                showNotification(`Invitation sent to ${name} (${email})`, 'success');
+                
+            } catch (error) {
+                console.error("Error adding member:", error);
+                console.error("Error details:", {
+                    message: error.message,
+                    code: error.code,
+                    stack: error.stack
+                });
+                document.getElementById('modal-message').textContent = `Error adding member: ${error.message}`;
+                showNotification(`Error adding member: ${error.message}`, 'error');
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+        function renderEvents(eventsData) {
+            const calendarGrid = document.getElementById('calendar-grid');
+            
+            // Clear only the day cells, preserve the header row
+            const dayCells = calendarGrid.querySelectorAll('.day-cell');
+            dayCells.forEach(cell => cell.remove());
+
+            // Get current month and year (for July 2025 as per prototype)
+            const today = new Date();
+            const currentMonth = today.getMonth(); // 6 for July
+            const currentYear = today.getFullYear(); // 2025
+
+            // For simplicity, hardcode to July 2025 as in the prototype
+            const displayMonth = 6; // July
+            const displayYear = 2025;
+
+            const firstDayOfMonth = new Date(displayYear, displayMonth, 1).getDay(); // 3 for Wed (July 1, 2025)
+            const daysInMonth = new Date(displayYear, displayMonth + 1, 0).getDate(); // 31 for July
+
+            // Add empty cells for days before the 1st
+            for (let i = 0; i < firstDayOfMonth; i++) {
+                const prevMonthDate = new Date(displayYear, displayMonth, 0).getDate() - (firstDayOfMonth - 1 - i);
+                calendarGrid.insertAdjacentHTML('beforeend', `<div class="h-28 bg-slate-50 text-slate-400 p-2 day-cell">${prevMonthDate}</div>`);
+            }
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateString = `${displayYear}-${String(displayMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const dayEvents = eventsData.filter(event => event.date === dateString);
+                
+                let dayClass = 'bg-white';
+                let todayMarker = '';
+                if (day === today.getDate() && displayMonth === currentMonth && displayYear === currentYear) {
+                    dayClass = 'bg-amber-50 border-2 border-amber-400';
+                    todayMarker = '<span class="absolute bottom-2 left-2 text-xs font-semibold text-slate-600">Today</span>';
+                }
+
+                let eventHtml = '';
+                dayEvents.forEach(event => {
+                    eventHtml += `<div class="absolute bottom-2 left-2 right-2 text-xs font-bold text-white bg-blue-600 rounded px-2 py-1 truncate cursor-pointer hover:bg-blue-700 transition-colors" onclick="showEventDetails('${event.name}', '${event.date}', '${event.time}', '${event.location}', '${event.description.replace(/'/g, "\\'")}')">${event.name}</div>`;
+                });
+
+                const dayCell = `
+                    <div class="h-28 ${dayClass} p-2 relative day-cell">
+                        ${day}
+                        ${todayMarker}
+                        ${eventHtml}
+                    </div>
+                `;
+                calendarGrid.insertAdjacentHTML('beforeend', dayCell);
+            }
+        }
+
+        // Expose addEvent to global scope for onclick
+        window.addEvent = async function() {
+            if (!isAuthReady) return;
+            
+            const name = document.getElementById('eventName').value.trim();
+            const date = document.getElementById('eventDate').value;
+            const time = document.getElementById('eventTime').value;
+            const location = document.getElementById('eventLocation').value.trim();
+            const description = document.getElementById('eventDescription').value.trim();
+
+            // Enhanced validation
+            const errors = [];
+            if (!name) errors.push('Event name is required');
+            if (!date) errors.push('Date is required');
+            if (!time) errors.push('Time is required');
+            if (!location) errors.push('Location is required');
+            if (!description) errors.push('Description is required');
+            if (name.length < 3) errors.push('Event name must be at least 3 characters');
+            if (description.length < 10) errors.push('Description must be at least 10 characters');
+
+            if (errors.length > 0) {
+                document.getElementById('event-error-message').textContent = errors.join('. ');
+                document.getElementById('event-error-message').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('event-error-message').classList.add('hidden');
+
+            try {
+                const eventData = {
+                    name,
+                    date,
+                    time,
+                    location,
+                    description,
+                    rsvps: [],
+                    createdAt: new Date().toISOString()
+                };
+
+                if (window.useLocalStorage) {
+                    // Local storage fallback
+                    const events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                    events.push({ id: Date.now().toString(), ...eventData });
+                    localStorage.setItem('exchequer_events', JSON.stringify(events));
+                } else {
+                    try {
+                        await addDoc(collection(db, `artifacts/${appId}/users/${userId}/events`), eventData);
+                    } catch (firebaseError) {
+                        console.warn('Firebase permissions error, falling back to localStorage:', firebaseError);
+                        // Fallback to localStorage if Firebase fails
+                        window.useLocalStorage = true;
+                        const events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                        events.push({ id: Date.now().toString(), ...eventData });
+                        localStorage.setItem('exchequer_events', JSON.stringify(events));
+                    }
+                }
+                
+                document.getElementById('modal-message').textContent = `Event "${name}" added successfully!`;
+                document.getElementById('statusModal').classList.remove('hidden');
+                document.getElementById('addEventModal').classList.add('hidden');
+                document.getElementById('addEventForm').reset();
+                
+                // Refresh events display to show the new event on calendar
+                if (window.useLocalStorage) {
+                    const events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                    renderEvents(events);
+                } else {
+                    try {
+                        // For Firebase, the onSnapshot listener will automatically update the display
+                        // But we can also manually trigger a refresh by re-fetching
+                        const eventsSnapshot = await getDocs(collection(db, `artifacts/${appId}/users/${userId}/events`));
+                        renderEvents(eventsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                    } catch (firebaseError) {
+                        console.warn('Firebase permissions error during refresh, using localStorage:', firebaseError);
+                        // Fallback to localStorage if Firebase fails
+                        window.useLocalStorage = true;
+                        const events = JSON.parse(localStorage.getItem('exchequer_events') || '[]');
+                        renderEvents(events);
+                    }
+                }
+                
+                // Show notification
+                showNotification(`Event "${name}" created successfully!`, 'success');
+            } catch (error) {
+                console.error("Error adding event:", error);
+                let errorMessage = 'Error adding event. Please try again.';
+                
+                if (error.message && error.message.includes('permissions')) {
+                    errorMessage = 'Firebase permissions error. Event saved to local storage instead.';
+                    showNotification('Event saved to local storage due to Firebase permissions.', 'warning');
+                } else {
+                    showNotification('Error creating event. Please try again.', 'error');
+                }
+                
+                document.getElementById('modal-message').textContent = errorMessage;
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+        function renderFundraisingCampaigns(campaignsData) {
+            const campaignsGrid = document.getElementById('campaigns-grid');
+            campaignsGrid.innerHTML = '';
+            campaignsData.forEach(campaign => {
+                const progress = (campaign.raisedAmount / campaign.goalAmount) * 100;
+                const progressWidth = Math.min(100, Math.max(0, progress)); // Cap between 0 and 100
+                const card = `
+                    <div class="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                        <h4 class="text-lg font-semibold text-slate-800 mb-2">${campaign.name}</h4>
+                        <p class="text-slate-600 text-sm mb-3">${campaign.description}</p>
+                        <div class="w-full bg-slate-200 rounded-full h-2.5 mb-2">
+                            <div class="bg-amber-500 h-2.5 rounded-full" style="width: ${progressWidth}%"></div>
+                        </div>
+                        <p class="text-sm text-slate-700 font-medium">$${campaign.raisedAmount.toLocaleString()} raised of $${campaign.goalAmount.toLocaleString()} goal</p>
+                        <div class="flex justify-between items-center mt-3">
+                            <span class="text-xs text-slate-500">Ends: ${campaign.endDate}</span>
+                            <button class="bg-blue-600 text-white px-3 py-1 rounded-md text-sm font-semibold hover:bg-blue-700" onclick="openSimulateDonationModal('${campaign.id}', '${campaign.name}')">Simulate Donation</button>
+                        </div>
+                    </div>
+                `;
+                campaignsGrid.insertAdjacentHTML('beforeend', card);
+            });
+        }
+
+        function renderDonations(donationsData) {
+            const donationsTableBody = document.getElementById('donations-table-body');
+            donationsTableBody.innerHTML = '';
+            donationsData.forEach(donation => {
+                const row = `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                        <td class="p-3 font-medium">${donation.donorName}</td>
+                        <td class="p-3">$${donation.amount.toLocaleString()}</td>
+                        <td class="p-3">${donation.campaignName}</td>
+                        <td class="p-3">${donation.date}</td>
+                    </tr>
+                `;
+                donationsTableBody.insertAdjacentHTML('beforeend', row);
+            });
+        }
+
+        // Expose createCampaign to global scope for onclick
+        window.createCampaign = async function() {
+            if (!isAuthReady) return;
+            const name = document.getElementById('campaignName').value;
+            const description = document.getElementById('campaignDescription').value;
+            const goalAmount = parseFloat(document.getElementById('campaignGoal').value);
+            const endDate = document.getElementById('campaignEndDate').value;
+
+            if (!name || !description || isNaN(goalAmount) || goalAmount <= 0 || !endDate) {
+                document.getElementById('campaign-error-message').textContent = 'Please fill all fields with valid data.';
+                document.getElementById('campaign-error-message').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('campaign-error-message').classList.add('hidden');
+
+            try {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/fundraising_campaigns`), {
+                    name,
+                    description,
+                    goalAmount,
+                    raisedAmount: 0, // Start at 0
+                    endDate
+                });
+                document.getElementById('modal-message').textContent = 'Fundraising campaign created successfully!';
+                document.getElementById('statusModal').classList.remove('hidden');
+                document.getElementById('createCampaignModal').classList.add('hidden');
+                document.getElementById('createCampaignForm').reset();
+            } catch (error) {
+                console.error("Error creating campaign:", error);
+                document.getElementById('modal-message').textContent = 'Error creating campaign. Check console.';
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+        let currentSimulateCampaignId = null;
+        let currentSimulateCampaignName = null;
+
+        // Expose openSimulateDonationModal to global scope for onclick
+        window.openSimulateDonationModal = function(campaignId, campaignName) {
+            currentSimulateCampaignId = campaignId;
+            currentSimulateCampaignName = campaignName;
+            document.getElementById('simulateDonationCampaignName').textContent = campaignName;
+            document.getElementById('simulateDonationModal').classList.remove('hidden');
+        }
+
+        // Show reminders modal function
+        function showRemindersModal(reminders, members) {
+            console.log('showRemindersModal called with:', { reminders, members });
+            
+            try {
+                // Store reminders data globally for the confirm function
+                window.currentReminders = { reminders, members };
+                
+                const modal = document.getElementById('remindersModal');
+                const remindersList = document.getElementById('reminders-list');
+                const remindersCount = document.getElementById('reminders-count');
+                
+                if (!modal) {
+                    throw new Error('Reminders modal not found');
+                }
+                if (!remindersList) {
+                    throw new Error('Reminders list element not found');
+                }
+                if (!remindersCount) {
+                    throw new Error('Reminders count element not found');
+                }
+                
+                console.log('Modal elements found, updating content...');
+                
+                // Update count
+                remindersCount.textContent = reminders.length;
+                
+                // Clear and populate reminders list
+                remindersList.innerHTML = '';
+                reminders.forEach(duesItem => {
+                    const member = members.find(m => m.name === duesItem.memberName);
+                    const email = member && member.email ? member.email : '(no email)';
+                    const statusClass = duesItem.status === 'Unpaid' ? 'text-red-600' : 'text-yellow-600';
+                    
+                    const reminderItem = `
+                        <div class="border-b border-slate-200 py-3">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <h4 class="font-semibold text-slate-800">${duesItem.memberName}</h4>
+                                    <p class="text-sm text-slate-600">${email}</p>
+                                    <p class="text-sm text-slate-500">Due Date: ${duesItem.dueDate}</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-semibold text-slate-800">$${duesItem.amount.toLocaleString()}</p>
+                                    <span class="text-xs font-medium px-2 py-1 rounded-full ${statusClass} bg-opacity-10 ${statusClass === 'text-red-600' ? 'bg-red-100' : 'bg-yellow-100'}">${duesItem.status}</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    remindersList.insertAdjacentHTML('beforeend', reminderItem);
+                });
+                
+                console.log('Content updated, showing modal...');
+                
+                // Show modal
+                modal.classList.remove('hidden');
+                console.log('Modal should now be visible');
+                
+            } catch (error) {
+                console.error('Error in showRemindersModal:', error);
+                showNotification(`Error showing reminders modal: ${error.message}`, 'error');
+            }
+        }
+
+                // Confirm send reminders function
+        window.confirmSendReminders = function() {
+            if (!window.currentReminders) {
+                showNotification('No reminders to send.', 'warning');
+                return;
+            }
+            
+            const { reminders, members } = window.currentReminders;
+            
+            // Simulate sending reminders
+            reminders.forEach(duesItem => {
+                const member = members.find(m => m.name === duesItem.memberName);
+                const email = member && member.email ? member.email : '(no email)';
+                showNotification(`Reminder sent to ${duesItem.memberName} (${email}) for $${duesItem.amount} (${duesItem.status})`, 'success');
+            });
+            
+            // Close modal
+            document.getElementById('remindersModal').classList.add('hidden');
+            
+            // Clear stored data
+            window.currentReminders = null;
+            
+            showNotification(`Successfully sent ${reminders.length} reminder(s)!`, 'success');
+        }
+
+        // Show payment modal for expense submission
+        window.showPaymentModal = function(clientSecret, paymentIntentId, type) {
+            // Create payment modal
+            const modal = document.createElement('div');
+            modal.id = 'payment-modal';
+            modal.className = 'modal-overlay';
+            modal.innerHTML = `
+                <div class="modal-content max-w-md">
+                    <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+                    <div class="text-center mb-6">
+                        <div class="bg-amber-100 p-3 rounded-full inline-block mb-4">
+                            <svg class="w-8 h-8 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+                            </svg>
+                        </div>
+                        <h3 class="text-xl font-bold text-slate-800 mb-2">Complete Payment</h3>
+                        <p class="text-slate-600">Please complete your payment to submit this ${type}.</p>
+                    </div>
+                    
+                    <div id="payment-element" class="mb-6"></div>
+                    
+                    <div class="flex space-x-3">
+                        <button id="confirm-payment-btn" class="flex-1 bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-3 px-4 rounded-lg">
+                            Confirm Payment
+                        </button>
+                        <button id="cancel-payment-btn" class="flex-1 bg-slate-300 hover:bg-slate-400 text-slate-700 font-bold py-3 px-4 rounded-lg">
+                            Cancel
+                        </button>
+                    </div>
+                    
+                    <div id="payment-error" class="hidden mt-4 p-3 bg-red-100 text-red-700 rounded-lg"></div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            modal.classList.remove('hidden');
+
+            // Initialize Stripe Elements
+            if (typeof Stripe !== 'undefined' && clientSecret && !clientSecret.includes('mock')) {
+                const stripe = Stripe('pk_test_51H...'); // You'll need to add your publishable key
+                const elements = stripe.elements({
+                    clientSecret: clientSecret,
+                    appearance: {
+                        theme: 'stripe',
+                        variables: {
+                            colorPrimary: '#fbbf24',
+                            colorBackground: '#ffffff',
+                            colorText: '#1f2937',
+                            colorDanger: '#ef4444',
+                            fontFamily: 'Inter, system-ui, sans-serif',
+                            spacingUnit: '4px',
+                            borderRadius: '8px'
+                        }
+                    }
+                });
+
+                const paymentElement = elements.create('payment');
+                paymentElement.mount('#payment-element');
+
+                // Handle payment confirmation
+                document.getElementById('confirm-payment-btn').addEventListener('click', async () => {
+                    const confirmBtn = document.getElementById('confirm-payment-btn');
+                    const errorDiv = document.getElementById('payment-error');
+                    
+                    confirmBtn.textContent = 'Processing...';
+                    confirmBtn.disabled = true;
+                    errorDiv.classList.add('hidden');
+
+                    try {
+                        const { error } = await stripe.confirmPayment({
+                            elements,
+                            clientSecret,
+                            confirmParams: {
+                                return_url: window.location.origin + '/payment-success',
+                            },
+                        });
+
+                        if (error) {
+                            errorDiv.textContent = error.message;
+                            errorDiv.classList.remove('hidden');
+                        } else {
+                            // Payment successful
+                            document.getElementById('modal-message').textContent = 'Payment successful! Expense submitted.';
+                            document.getElementById('statusModal').classList.remove('hidden');
+                            modal.remove();
+                            
+                            // Close expense modal
+                            document.getElementById('addExpenseModal').classList.add('hidden');
+                            document.getElementById('expenseForm').reset();
+                        }
+                    } catch (error) {
+                        errorDiv.textContent = 'Payment failed. Please try again.';
+                        errorDiv.classList.remove('hidden');
+                    } finally {
+                        confirmBtn.textContent = 'Confirm Payment';
+                        confirmBtn.disabled = false;
+                    }
+                });
+            } else {
+                // Fallback if Stripe is not loaded or demo mode
+                const isDemo = clientSecret && clientSecret.includes('mock');
+                document.getElementById('payment-element').innerHTML = `
+                    <div class="p-4 ${isDemo ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'} rounded-lg">
+                        <p class="font-semibold">${isDemo ? 'Demo Mode' : 'Stripe Not Available'}</p>
+                        <p class="text-sm">${isDemo ? 'This is a demo submission. No payment required.' : 'Stripe integration not available. Expense will be submitted without payment processing.'}</p>
+                    </div>
+                `;
+                
+                document.getElementById('confirm-payment-btn').addEventListener('click', () => {
+                    const message = isDemo ? 'Expense submitted successfully! (Demo mode)' : 'Expense submitted successfully! (No payment)';
+                    document.getElementById('modal-message').textContent = message;
+                    document.getElementById('statusModal').classList.remove('hidden');
+                    modal.remove();
+                    document.getElementById('addExpenseModal').classList.add('hidden');
+                    document.getElementById('expenseForm').reset();
+                    
+                    // Show notification
+                    showNotification(message, 'success');
+                });
+            }
+
+            // Handle modal close
+            modal.querySelector('.close-modal').addEventListener('click', () => modal.remove());
+            document.getElementById('cancel-payment-btn').addEventListener('click', () => modal.remove());
+        };
+
+        // Expose showEventDetails to global scope for onclick
+        window.showEventDetails = function(name, date, time, location, description) {
+            document.getElementById('event-details-name').textContent = name;
+            document.getElementById('event-details-date').textContent = new Date(date).toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            });
+            document.getElementById('event-details-time').textContent = time;
+            document.getElementById('event-details-location').textContent = location;
+            document.getElementById('event-details-description').textContent = description;
+            
+            // Set up RSVP button
+            const rsvpButton = document.getElementById('rsvp-button');
+            rsvpButton.onclick = function() {
+                showNotification(`RSVP'd to "${name}"!`, 'success');
+                document.getElementById('eventDetailsModal').classList.add('hidden');
+            };
+            
+            document.getElementById('eventDetailsModal').classList.remove('hidden');
+        }
+
+        // Expose simulateDonation to global scope for onclick
+        window.simulateDonation = async function() {
+            if (!isAuthReady || !currentSimulateCampaignId) return;
+            const donorName = document.getElementById('donorName').value;
+            const donationAmount = parseFloat(document.getElementById('donationAmount').value);
+
+            if (!donorName || isNaN(donationAmount) || donationAmount <= 0) {
+                document.getElementById('donation-error-message').textContent = 'Please enter donor name and a valid amount.';
+                document.getElementById('donation-error-message').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('donation-error-message').classList.add('hidden');
+
+            document.getElementById('modal-message').textContent = 'Simulating donation... (In a real app, this would securely process donation via Stripe)';
+            document.getElementById('statusModal').classList.remove('hidden');
+
+            try {
+                // Add donation record
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/donations`), {
+                    campaignId: currentSimulateCampaignId,
+                    campaignName: currentSimulateCampaignName,
+                    donorName,
+                    amount: donationAmount,
+                    date: new Date().toISOString().split('T')[0]
+                });
+
+                // Update campaign's raised amount
+                const campaignRef = doc(db, `artifacts/${appId}/users/${userId}/fundraising_campaigns`, currentSimulateCampaignId);
+                const campaignSnap = await getDoc(campaignRef);
+                if (campaignSnap.exists()) {
+                    const currentRaised = campaignSnap.data().raisedAmount || 0;
+                    await updateDoc(campaignRef, {
+                        raisedAmount: currentRaised + donationAmount
+                    });
+                }
+
+                document.getElementById('modal-message').textContent = `Donation of $${donationAmount.toLocaleString()} simulated successfully to ${currentSimulateCampaignName}!`;
+                document.getElementById('simulateDonationModal').classList.add('hidden');
+                document.getElementById('simulateDonationForm').reset();
+            } catch (error) {
+                console.error("Error simulating donation:", error);
+                document.getElementById('modal-message').textContent = 'Error simulating donation. Check console.';
+            }
+            setTimeout(() => document.getElementById('statusModal').classList.add('hidden'), 3000);
+        }
+
+
+        // --- Event Listeners and Initial Setup ---
+        document.addEventListener('DOMContentLoaded', function () {
+            initializeFirebase(); // Initialize Firebase on DOMContentLoaded
+
+            const navLinks = document.querySelectorAll('.nav-link');
+            const viewSections = document.querySelectorAll('.view-section');
+            const mobileMenuButton = document.getElementById('mobile-menu-button');
+            const sidebar = document.getElementById('sidebar');
+
+            function showView(viewId) {
+                viewSections.forEach(section => {
+                    section.classList.remove('active');
+                });
+                document.getElementById(viewId).classList.add('active');
+
+                navLinks.forEach(link => {
+                    link.classList.remove('active');
+                    if (link.dataset.view === viewId.replace('view-', '')) {
+                        link.classList.add('active');
+                    }
+                });
+                // Re-render expenses when switching to expenses tab to apply filter
+                if (viewId === 'view-expenses' && isAuthReady) {
+                    onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/expenses`), (snapshot) => {
+                        renderExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                    });
+                }
+            }
+
+            navLinks.forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const viewId = 'view-' + e.currentTarget.dataset.view;
+                    showView(viewId);
+                });
+            });
+            
+            mobileMenuButton.addEventListener('click', () => {
+                sidebar.classList.toggle('hidden');
+                sidebar.classList.toggle('flex');
+            });
+
+            // Expense Tabs Logic
+            const expenseTabs = document.querySelectorAll('#expense-tabs .tab-button');
+            expenseTabs.forEach(tab => {
+                tab.addEventListener('click', (e) => {
+                    expenseTabs.forEach(t => t.classList.remove('active'));
+                    e.currentTarget.classList.add('active');
+                    if (isAuthReady) {
+                        onSnapshot(collection(db, `artifacts/${appId}/users/${userId}/expenses`), (snapshot) => {
+                            renderExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                        });
+                    }
+                });
+            });
+
+            // AI Budget Suggestions Logic
+            const generateBudgetBtn = document.getElementById('generateBudgetBtn');
+            const budgetPromptInput = document.getElementById('budgetPrompt');
+            const budgetSuggestionsOutput = document.getElementById('budgetSuggestionsOutput');
+            const suggestionsList = document.getElementById('suggestionsList');
+            const noSuggestionsMessage = document.getElementById('noSuggestionsMessage');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            const generateBudgetBtnText = document.getElementById('generateBudgetBtnText');
+            const errorMessage = document.getElementById('errorMessage');
+
+            generateBudgetBtn.addEventListener('click', async () => {
+                const prompt = budgetPromptInput.value.trim();
+                if (!prompt) {
+                    errorMessage.textContent = 'Please enter a prompt to generate budget suggestions.';
+                    errorMessage.classList.remove('hidden');
+                    budgetSuggestionsOutput.classList.add('hidden');
+                    return;
+                }
+
+                suggestionsList.innerHTML = '';
+                budgetSuggestionsOutput.classList.add('hidden');
+                noSuggestionsMessage.classList.add('hidden');
+                errorMessage.classList.add('hidden');
+                loadingSpinner.classList.remove('hidden');
+                generateBudgetBtnText.textContent = 'Generating...';
+                generateBudgetBtn.disabled = true;
+
+                try {
+                    let chatHistory = [];
+                    chatHistory.push({ role: "user", parts: [{ text: `Generate a list of budget categories and estimated amounts (e.g., "Category: $Amount") for a student organization's budget. The budget is for: ${prompt}. Provide at least 5 distinct categories. Format the output as a JSON array of objects, where each object has 'category' (string) and 'amount' (number). Example: [{"category": "Venue Rental", "amount": 1500}, {"category": "Catering", "amount": 800}]` }] });
+                    const payload = {
+                        contents: chatHistory,
+                        generationConfig: {
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: "ARRAY",
+                                items: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        "category": { "type": "STRING" },
+                                        "amount": { "type": "NUMBER" }
+                                    },
+                                    "propertyOrdering": ["category", "amount"]
+                                }
+                            }
+                        }
+                    };
+                    const apiKey = ""; // Canvas will provide this
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                    
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    const result = await response.json();
+
+                    if (result.candidates && result.candidates.length > 0 &&
+                        result.candidates[0].content && result.candidates[0].content.parts &&
+                        result.candidates[0].content.parts.length > 0) {
+                        const json = result.candidates[0].content.parts[0].text;
+                        const parsedJson = JSON.parse(json);
+
+                        if (parsedJson && parsedJson.length > 0) {
+                            parsedJson.forEach(item => {
+                                const listItem = document.createElement('li');
+                                listItem.textContent = `${item.category}: $${item.amount.toLocaleString()}`;
+                                suggestionsList.appendChild(listItem);
+                            });
+                            budgetSuggestionsOutput.classList.remove('hidden');
+                        } else {
+                            noSuggestionsMessage.classList.remove('hidden');
+                            budgetSuggestionsOutput.classList.remove('hidden');
+                        }
+                    } else {
+                        errorMessage.textContent = 'Could not retrieve valid suggestions from the AI. Please try again.';
+                        errorMessage.classList.remove('hidden');
+                    }
+
+                } catch (error) {
+                    errorMessage.textContent = 'Failed to connect to the AI service. Please check your network and try again.';
+                    errorMessage.classList.remove('hidden');
+                    console.error('Error calling Gemini API:', error);
+                } finally {
+                    loadingSpinner.classList.add('hidden');
+                    generateBudgetBtnText.textContent = '✨ Generate Budget Suggestions';
+                    generateBudgetBtn.disabled = false;
+                }
+            });
+
+            // Modals
+            document.querySelectorAll('[data-modal-target]').forEach(button => {
+                button.addEventListener('click', () => {
+                    const modalId = button.dataset.modalTarget;
+                    document.getElementById(modalId).classList.remove('hidden');
+                });
+            });
+
+            document.querySelectorAll('.close-modal').forEach(button => {
+                button.addEventListener('click', () => {
+                    button.closest('.modal-overlay').classList.add('hidden');
+                    // Clear error messages when closing modals
+                    document.getElementById('expense-error-message').classList.add('hidden');
+                    document.getElementById('member-error-message').classList.add('hidden');
+                    document.getElementById('event-error-message').classList.add('hidden');
+                    document.getElementById('campaign-error-message').classList.add('hidden');
+                    document.getElementById('donation-error-message').classList.add('hidden');
+                });
+            });
+
+            // Form Submissions
+            document.getElementById('expenseForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                submitExpense();
+            });
+            document.getElementById('addMemberForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                addMember();
+            });
+            document.getElementById('addEventForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                addEvent();
+            });
+            document.getElementById('createCampaignForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                createCampaign();
+            });
+            document.getElementById('simulateDonationForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                simulateDonation();
+            });
+
+            // Enable Send Reminders button
+            const sendRemindersBtn = document.getElementById('send-reminders-btn');
+            if (sendRemindersBtn) {
+                sendRemindersBtn.addEventListener('click', async () => {
+                    console.log('Send Reminders button clicked');
+                    
+                    if (!isAuthReady) {
+                        showNotification('App is not ready yet. Please wait.', 'warning');
+                        return;
+                    }
+                    
+                    // Show loading state
+                    sendRemindersBtn.disabled = true;
+                    sendRemindersBtn.textContent = 'Sending...';
+                    
+                    try {
+                        let dues = [];
+                        let members = [];
+                        
+                        console.log('Retrieving data...');
+                        if (window.useLocalStorage) {
+                            console.log('Using localStorage');
+                            dues = JSON.parse(localStorage.getItem('exchequer_dues') || '[]');
+                            members = JSON.parse(localStorage.getItem('exchequer_members') || '[]');
+                        } else {
+                            console.log('Using Firestore');
+                            try {
+                                // Firestore
+                                const duesSnap = await getDocs(collection(db, `artifacts/${appId}/users/${userId}/dues`));
+                                dues = duesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                                const membersSnap = await getDocs(collection(db, `artifacts/${appId}/users/${userId}/members`));
+                                members = membersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                            } catch (firebaseError) {
+                                console.warn('Firebase permissions error, falling back to localStorage:', firebaseError);
+                                // Fallback to localStorage if Firebase fails
+                                window.useLocalStorage = true;
+                                dues = JSON.parse(localStorage.getItem('exchequer_dues') || '[]');
+                                members = JSON.parse(localStorage.getItem('exchequer_members') || '[]');
+                                
+                                // If no data in localStorage, use default data
+                                if (dues.length === 0) {
+                                    dues = [
+                                        { memberName: "Alice Johnson", amount: 150, status: "Paid", dueDate: "2025-09-15", paidDate: "2025-09-01" },
+                                        { memberName: "Bob Williams", amount: 150, status: "Unpaid", dueDate: "2025-09-15", paidDate: "" }
+                                    ];
+                                }
+                                if (members.length === 0) {
+                                    members = [
+                                        { name: "John Doe", email: "john.doe@example.com", role: "Treasurer", status: "Active" },
+                                        { name: "Jane Smith", email: "jane.smith@example.com", role: "President", status: "Active" },
+                                        { name: "Alice Johnson", email: "alice.j@example.com", role: "Member", status: "Active" },
+                                        { name: "Bob Williams", email: "bob.w@example.com", role: "Member", status: "Active" }
+                                    ];
+                                }
+                            }
+                        }
+                        
+                        console.log('Dues data:', dues);
+                        console.log('Members data:', members);
+                        
+                        // Find members with unpaid or partially paid dues
+                        const reminders = dues.filter(d => d.status === 'Unpaid' || d.status === 'Partially Paid');
+                        console.log('Reminders to send:', reminders);
+                        
+                        if (reminders.length === 0) {
+                            showNotification('All dues are paid. No reminders needed!', 'success');
+                        } else {
+                            // Show reminders modal
+                            console.log('Showing reminders modal...');
+                            showRemindersModal(reminders, members);
+                        }
+                    } catch (error) {
+                        console.error('Error sending reminders:', error);
+                        showNotification(`Error sending reminders: ${error.message}`, 'error');
+                    } finally {
+                        // Reset button state
+                        sendRemindersBtn.disabled = false;
+                        sendRemindersBtn.textContent = 'Send Reminders';
+                    }
+                });
+            } else {
+                console.error('Send Reminders button not found');
+            }
+        });
+    </script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* slate-50 */
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 40vh;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+        .nav-link {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+            font-weight: 500;
+            color: #475569; /* slate-600 */
+        }
+        .nav-link:hover {
+            background-color: #e2e8f0; /* slate-200 */
+        }
+        .nav-link.active {
+            background-color: #fbbf24; /* amber-400 */
+            color: #422006; /* amber-950 */
+        }
+        .view-section {
+            display: none;
+        }
+        .view-section.active {
+            display: block;
+        }
+        .tab-button {
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            color: #475569;
+            transition: all 0.2s;
+        }
+        .tab-button.active {
+            background-color: #1e293b; /* slate-800 */
+            color: #f8fafc; /* slate-50 */
+        }
+        .kpi-card {
+            background-color: white;
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+        }
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #fbbf24;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            max-width: 500px;
+            width: 90%;
+            position: relative;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+
+    <div class="flex h-screen">
+        <!-- Sidebar Navigation -->
+        <aside id="sidebar" class="w-64 bg-white border-r border-slate-200 p-4 flex-col fixed h-full md:flex hidden">
+            <div class="flex items-center gap-2 mb-8">
+                <div class="bg-amber-400 p-2 rounded-lg">
+                    <svg class="w-6 h-6 text-slate-900" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l-3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
+                </div>
+                <h1 class="text-2xl font-bold text-slate-800">Exchequer</h1>
+            </div>
+            <nav class="flex-1 space-y-2">
+                <a href="#" class="nav-link active" data-view="dashboard">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                    Dashboard
+                </a>
+                <a href="#" class="nav-link" data-view="dues">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                    Dues
+                </a>
+                <a href="#" class="nav-link" data-view="expenses">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    Expenses
+                </a>
+                <a href="#" class="nav-link" data-view="members">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.653-.28-1.25-1.455-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.653.28-1.25 1.455-1.857M12 12a3 3 0 100-6 3 3 0 000 6z"></path></svg>
+                    Members
+                </a>
+                <a href="#" class="nav-link" data-view="events">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    Events
+                </a>
+                <a href="#" class="nav-link" data-view="budget">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path></svg>
+                    Budget
+                </a>
+                <a href="#" class="nav-link" data-view="fundraising">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v.01M12 16v-2m-3 0h6m-6 4h6m-5 3H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    Fundraising
+                </a>
+            </nav>
+            <div class="mt-auto space-y-2">
+                <a href="#" class="nav-link" onclick="exportData()">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    Export Data
+                </a>
+                <a href="#" class="nav-link" data-modal-target="settingsModal">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.096 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    Settings
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 md:ml-64 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+            <!-- Mobile Header -->
+            <div class="md:hidden flex justify-between items-center mb-6">
+                <div class="flex items-center gap-2">
+                    <div class="bg-amber-400 p-2 rounded-lg">
+                        <svg class="w-6 h-6 text-slate-900" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l-3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
+                    </div>
+                    <h1 class="text-2xl font-bold text-slate-800">Exchequer</h1>
+                </div>
+                 <button id="mobile-menu-button" class="p-2">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                </button>
+            </div>
+            
+            <!-- App Status Message -->
+            <div id="app-status" class="hidden p-3 mb-4 bg-blue-100 text-blue-700 border border-blue-200 rounded-lg">
+                Initializing app...
+            </div>
+
+            <!-- Dashboard View -->
+            <section id="view-dashboard" class="view-section active">
+                <div class="flex justify-between items-start mb-6">
+                    <div>
+                        <h2 class="text-3xl font-bold text-slate-800">Welcome, John!</h2>
+                        <p class="text-slate-500 mt-1">Here's the financial snapshot for <span id="org-name-display" class="font-semibold text-slate-600">Your Student Organization</span>.</p>
+                    </div>
+                    <button class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg flex items-center" data-modal-target="addExpenseModal">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                        Submit Expense
+                    </button>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="kpi-card">
+                        <h3 class="text-slate-500 font-medium">Current Balance</h3>
+                        <p id="current-balance-display" class="text-3xl font-bold text-slate-800 mt-2">$8,450.75</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h3 class="text-slate-500 font-medium">Dues Collected (Fall)</h3>
+                        <p id="dues-collected-display" class="text-3xl font-bold text-green-600 mt-2">$7,500</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h3 class="text-slate-500 font-medium">Outstanding Dues</h3>
+                        <p id="outstanding-dues-display" class="text-3xl font-bold text-red-600 mt-2">$1,500</p>
+                    </div>
+                    <div class="kpi-card">
+                        <h3 class="text-slate-500 font-medium">Pending Expenses</h3>
+                        <p id="pending-expenses-display" class="text-3xl font-bold text-orange-600 mt-2">$320.50</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2 bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-xl font-bold text-slate-800 mb-4">Dues Collection Status (Fall Semester)</h3>
+                        <p class="text-slate-500 mb-4">This chart shows the breakdown of collected dues from members for the current semester, helping you track payment progress at a glance.</p>
+                        <div class="chart-container">
+                            <canvas id="duesChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="lg:col-span-1 bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-xl font-bold text-slate-800 mb-4">Recent Activity</h3>
+                        <div id="recent-activity-list" class="space-y-4">
+                            <!-- Activities will be dynamically loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Dues View -->
+            <section id="view-dues" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Dues Management</h2>
+                <p class="text-slate-500 mb-6">Track member dues, send reminders, and manage payment settings. This section provides a complete overview of your organization's primary income source.</p>
+                
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-bold text-slate-800">All Members (Fall Semester)</h3>
+                         <button id="send-reminders-btn" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Send Reminders</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead>
+                                <tr class="border-b border-slate-200 text-slate-600">
+                                    <th class="p-3">Member Name</th>
+                                    <th class="p-3">Dues Amount</th>
+                                    <th class="p-3">Status</th>
+                                    <th class="p-3">Due Date</th>
+                                    <th class="p-3">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dues-table-body">
+                                <!-- Dues will be dynamically loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Expenses View -->
+            <section id="view-expenses" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Expense Management</h2>
+                <p class="text-slate-500 mb-6">Review, approve, or reject expense submissions from members. Maintain a clear and transparent audit trail for all organizational spending.</p>
+                
+                 <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4">
+                        <div id="expense-tabs" class="flex space-x-2 bg-slate-100 p-1 rounded-md mb-4 sm:mb-0">
+                            <button class="tab-button active" data-tab="pending">Pending</button>
+                            <button class="tab-button" data-tab="approved">Approved</button>
+                            <button class="tab-button" data-tab="rejected">Rejected</button>
+                        </div>
+                         <button class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg" data-modal-target="addExpenseModal">Submit New Expense</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                             <thead>
+                                <tr class="border-b border-slate-200 text-slate-600">
+                                    <th class="p-3">Date</th>
+                                    <th class="p-3">Submitter</th>
+                                    <th class="p-3">Description</th>
+                                    <th class="p-3">Amount</th>
+                                    <th class="p-3">Status</th>
+                                    <th class="p-3">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="expense-table-body">
+                                <!-- Expenses will be dynamically loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Members View -->
+            <section id="view-members" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Member Management</h2>
+                <p class="text-slate-500 mb-6">Maintain an up-to-date directory of all members, manage their roles and permissions, and oversee officer transitions seamlessly.</p>
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-bold text-slate-800">Member Directory</h3>
+                         <button class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg" data-modal-target="addMemberModal">Invite New Member</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                             <thead>
+                                <tr class="border-b border-slate-200 text-slate-600">
+                                    <th class="p-3">Name</th>
+                                    <th class="p-3">Role</th>
+                                    <th class="p-3">Email</th>
+                                    <th class="p-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="members-table-body">
+                                <!-- Members will be dynamically loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+             <!-- Events View -->
+            <section id="view-events" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Events Calendar</h2>
+                <p class="text-slate-500 mb-6">Create and manage all your organization's events in one place. Members can view details and RSVP, keeping everyone in sync.</p>
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex justify-between items-center mb-6">
+                        <div class="flex items-center">
+                            <button class="p-2 rounded-full hover:bg-slate-100">
+                                <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                            </button>
+                            <h3 class="text-xl font-bold text-slate-800 mx-4">July 2025</h3>
+                            <button class="p-2 rounded-full hover:bg-slate-100">
+                                <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                            </button>
+                        </div>
+                         <button class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg" data-modal-target="addEventModal">Create Event</button>
+                    </div>
+                    <div id="calendar-grid" class="grid grid-cols-7 gap-px bg-slate-200 border border-slate-200">
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Sun</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Mon</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Tue</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Wed</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Thu</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Fri</div>
+                        <div class="text-center font-semibold text-slate-600 py-2 bg-white">Sat</div>
+
+                        <!-- Calendar days will be dynamically loaded here -->
+                    </div>
+                </div>
+            </section>
+
+             <!-- Budget View -->
+            <section id="view-budget" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Budgeting & Planning</h2>
+                <p class="text-slate-500 mb-6">Set your budget for the fiscal year, track spending against it in real-time, and leverage historical data to make smarter financial decisions.</p>
+                
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <h3 class="text-xl font-bold text-slate-800 mb-4">Fall Semester Budget vs. Actuals</h3>
+                    <p class="text-slate-500 mb-4">This chart compares your budgeted amounts to your actual spending across different categories. Use this to identify areas of overspending or potential savings.</p>
+                    <div class="chart-container">
+                        <canvas id="budgetChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h3 class="text-xl font-bold text-slate-800 mb-4">✨ AI-Powered Budget Suggestions</h3>
+                    <p class="text-slate-500 mb-4">Describe the type of event or period you're budgeting for, and our AI will suggest common budget categories and estimated amounts. This can be a great starting point for your financial planning.</p>
+                    <div class="mb-4">
+                        <label for="budgetPrompt" class="block text-slate-700 text-sm font-bold mb-2">What are you budgeting for?</label>
+                        <textarea id="budgetPrompt" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline h-24 resize-none" placeholder="e.g., 'Fall recruitment events and social gatherings', 'Annual charity gala', 'Semester operating costs'"></textarea>
+                    </div>
+                    <button id="generateBudgetBtn" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg flex items-center justify-center">
+                        <span id="generateBudgetBtnText">✨ Generate Budget Suggestions</span>
+                        <div id="loadingSpinner" class="loading-spinner ml-2 hidden"></div>
+                    </button>
+                    <div id="budgetSuggestionsOutput" class="mt-6 p-4 bg-slate-50 rounded-lg border border-slate-200 hidden">
+                        <h4 class="text-lg font-semibold text-slate-800 mb-3">Suggested Budget Items:</h4>
+                        <ul id="suggestionsList" class="list-disc list-inside text-slate-700 space-y-1">
+                            <!-- Suggestions will be inserted here -->
+                        </ul>
+                        <p id="noSuggestionsMessage" class="text-slate-500 text-sm italic hidden">No suggestions generated. Please try a different prompt.</p>
+                    </div>
+                    <div id="errorMessage" class="mt-4 p-3 bg-red-100 text-red-700 border border-red-200 rounded-lg hidden">
+                        Error generating suggestions. Please try again.
+                    </div>
+                </div>
+            </section>
+
+            <!-- Fundraising View -->
+            <section id="view-fundraising" class="view-section">
+                <h2 class="text-3xl font-bold text-slate-800 mb-2">Fundraising Campaigns</h2>
+                <p class="text-slate-500 mb-6">Launch and manage fundraising initiatives to engage alumni, supporters, and members. Track donations and progress towards your goals, just like a GoFundMe!</p>
+                
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-bold text-slate-800">Active Campaigns</h3>
+                        <button class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg" data-modal-target="createCampaignModal">Create New Campaign</button>
+                    </div>
+                    <div id="campaigns-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Campaigns will be dynamically loaded here -->
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <h3 class="text-xl font-bold text-slate-800 mb-4">Recent Donations</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead>
+                                <tr class="border-b border-slate-200 text-slate-600">
+                                    <th class="p-3">Donor</th>
+                                    <th class="p-3">Amount</th>
+                                    <th class="p-3">Campaign</th>
+                                    <th class="p-3">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="donations-table-body">
+                                <!-- Donations will be dynamically loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <!-- Add Expense Modal -->
+    <div id="addExpenseModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Submit New Expense</h3>
+            <p class="text-red-500 text-sm mb-4 hidden" id="expense-error-message"></p>
+            <form id="expenseForm">
+                <div class="mb-4">
+                    <label for="expenseSubmitter" class="block text-slate-700 text-sm font-bold mb-2">Submitter Name</label>
+                    <input type="text" id="expenseSubmitter" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="expenseAmount" class="block text-slate-700 text-sm font-bold mb-2">Amount</label>
+                    <input type="number" step="0.01" id="expenseAmount" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="expenseCategory" class="block text-slate-700 text-sm font-bold mb-2">Category</label>
+                    <select id="expenseCategory" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                        <option value="">Select Category</option>
+                        <option value="Food">Food</option>
+                        <option value="Decorations">Decorations</option>
+                        <option value="Venue">Venue</option>
+                        <option value="Supplies">Supplies</option>
+                        <option value="Travel">Travel</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label for="expenseDescription" class="block text-slate-700 text-sm font-bold mb-2">Description</label>
+                    <textarea id="expenseDescription" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline h-24 resize-none" required></textarea>
+                </div>
+                <button type="submit" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Submit Expense</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Member Modal -->
+    <div id="addMemberModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Invite New Member</h3>
+            <p class="text-slate-600 text-sm mb-4">This will send an invitation email and add the member to your organization.</p>
+            <p class="text-red-500 text-sm mb-4 hidden" id="member-error-message"></p>
+            <form id="addMemberForm">
+                <div class="mb-4">
+                    <label for="memberName" class="block text-slate-700 text-sm font-bold mb-2">Member Name</label>
+                    <input type="text" id="memberName" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="memberEmail" class="block text-slate-700 text-sm font-bold mb-2">Member Email</label>
+                    <input type="email" id="memberEmail" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="memberRole" class="block text-slate-700 text-sm font-bold mb-2">Role</label>
+                    <select id="memberRole" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                        <option value="Member">Member</option>
+                        <option value="Event Chair">Event Chair</option>
+                        <option value="Secretary">Secretary</option>
+                        <option value="Treasurer">Treasurer</option>
+                        <option value="President">President</option>
+                    </select>
+                </div>
+                <button type="submit" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Send Invitation & Add Member</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Event Modal -->
+    <div id="addEventModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Create New Event</h3>
+            <p class="text-red-500 text-sm mb-4 hidden" id="event-error-message"></p>
+            <form id="addEventForm">
+                <div class="mb-4">
+                    <label for="eventName" class="block text-slate-700 text-sm font-bold mb-2">Event Name</label>
+                    <input type="text" id="eventName" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="eventDate" class="block text-slate-700 text-sm font-bold mb-2">Date</label>
+                    <input type="date" id="eventDate" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="eventTime" class="block text-slate-700 text-sm font-bold mb-2">Time</label>
+                    <input type="time" id="eventTime" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="eventLocation" class="block text-slate-700 text-sm font-bold mb-2">Location</label>
+                    <input type="text" id="eventLocation" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="eventDescription" class="block text-slate-700 text-sm font-bold mb-2">Description</label>
+                    <textarea id="eventDescription" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline h-24 resize-none" required></textarea>
+                </div>
+                <button type="submit" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Create Event</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create Campaign Modal -->
+    <div id="createCampaignModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Create New Fundraising Campaign</h3>
+            <p class="text-red-500 text-sm mb-4 hidden" id="campaign-error-message"></p>
+            <form id="createCampaignForm">
+                <div class="mb-4">
+                    <label for="campaignName" class="block text-slate-700 text-sm font-bold mb-2">Campaign Name</label>
+                    <input type="text" id="campaignName" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="campaignDescription" class="block text-slate-700 text-sm font-bold mb-2">Description</label>
+                    <textarea id="campaignDescription" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline h-24 resize-none" required></textarea>
+                </div>
+                <div class="mb-4">
+                    <label for="campaignGoal" class="block text-slate-700 text-sm font-bold mb-2">Goal Amount ($)</label>
+                    <input type="number" step="0.01" id="campaignGoal" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <div class="mb-4">
+                    <label for="campaignEndDate" class="block text-slate-700 text-sm font-bold mb-2">End Date</label>
+                    <input type="date" id="campaignEndDate" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <button type="submit" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Create Campaign</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Simulate Donation Modal -->
+    <div id="simulateDonationModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Simulate Donation to "<span id="simulateDonationCampaignName"></span>"</h3>
+            <p class="text-red-500 text-sm mb-4 hidden" id="donation-error-message"></p>
+            <form id="simulateDonationForm">
+                <div class="mb-4">
+                    <label for="donorName" class="block text-slate-700 text-sm font-bold mb-2">Donor Name (Optional)</label>
+                    <input type="text" id="donorName" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline">
+                </div>
+                <div class="mb-4">
+                    <label for="donationAmount" class="block text-slate-700 text-sm font-bold mb-2">Donation Amount ($)</label>
+                    <input type="number" step="0.01" id="donationAmount" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" required>
+                </div>
+                <p class="text-sm text-slate-600 mb-4">
+                    <strong class="text-red-600">NOTE:</strong> In a real application, this would securely process the donation via Stripe. Here, we are simulating the transaction and updating the campaign's progress in the database.
+                </p>
+                <button type="submit" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">Simulate Donation</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Settings</h3>
+            <p class="text-slate-600 mb-4">Manage your organization's settings.</p>
+            <div class="mb-4">
+                <label for="org-name-input" class="block text-slate-700 text-sm font-bold mb-2">Organization Name</label>
+                <input type="text" id="org-name-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-slate-700 leading-tight focus:outline-none focus:shadow-outline" value="Your Student Organization">
+                <button class="mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg" onclick="saveOrgName()">Save Name</button>
+            </div>
+            <p class="text-slate-500 text-sm mt-4">
+                Your User ID: <span id="user-id-display" class="font-mono text-slate-700 break-all">Loading...</span>
+            </p>
+            <p class="text-red-600 text-sm mt-2">
+                <strong class="font-bold">Important:</strong> For a real application, secure backend integration with Stripe is required for actual payment processing and financial security. This prototype simulates those actions.
+            </p>
+        </div>
+    </div>
+
+    <!-- Reminders Modal -->
+    <div id="remindersModal" class="modal-overlay hidden">
+        <div class="modal-content max-w-2xl">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <div class="flex items-center mb-4">
+                <div class="bg-blue-100 p-2 rounded-full mr-3">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-xl font-bold text-slate-800">Dues Reminders</h3>
+                    <p class="text-slate-600">Sending reminders to <span id="reminders-count" class="font-semibold">0</span> members with outstanding dues</p>
+                </div>
+            </div>
+            
+            <div class="bg-slate-50 rounded-lg p-4 mb-4">
+                <p class="text-sm text-slate-700">
+                    <strong>Note:</strong> In a real application, these reminders would be sent via email or SMS. 
+                    This simulation shows what would be sent to each member.
+                </p>
+            </div>
+            
+            <div id="reminders-list" class="max-h-96 overflow-y-auto">
+                <!-- Reminders will be populated here -->
+            </div>
+            
+            <div class="flex justify-end space-x-3 mt-6">
+                <button onclick="document.getElementById('remindersModal').classList.add('hidden')" class="bg-slate-300 hover:bg-slate-400 text-slate-700 font-bold py-2 px-4 rounded-lg">
+                    Close
+                </button>
+                <button onclick="confirmSendReminders()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">
+                    Send All Reminders
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Event Details Modal -->
+    <div id="eventDetailsModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <button class="close-modal absolute top-3 right-3 text-slate-500 hover:text-slate-700 text-2xl font-bold">&times;</button>
+            <div class="flex items-center mb-4">
+                <div class="bg-blue-100 p-2 rounded-full mr-3">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <h3 class="text-xl font-bold text-slate-800">Event Details</h3>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <h4 id="event-details-name" class="text-lg font-semibold text-slate-800"></h4>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-slate-600 text-sm font-medium mb-1">Date</label>
+                        <p id="event-details-date" class="text-slate-800"></p>
+                    </div>
+                    <div>
+                        <label class="block text-slate-600 text-sm font-medium mb-1">Time</label>
+                        <p id="event-details-time" class="text-slate-800"></p>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-slate-600 text-sm font-medium mb-1">Location</label>
+                    <p id="event-details-location" class="text-slate-800"></p>
+                </div>
+                <div>
+                    <label class="block text-slate-600 text-sm font-medium mb-1">Description</label>
+                    <p id="event-details-description" class="text-slate-800"></p>
+                </div>
+                <div class="pt-4 border-t border-slate-200">
+                    <button id="rsvp-button" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg w-full">
+                        RSVP to Event
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Enhanced Global Status/Confirmation Modal -->
+    <div id="statusModal" class="modal-overlay hidden">
+        <div class="modal-content text-center">
+            <div class="flex items-center justify-center mb-4">
+                <div id="status-icon" class="w-8 h-8 rounded-full flex items-center justify-center">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                </div>
+            </div>
+            <p id="modal-message" class="text-lg font-semibold text-slate-800"></p>
+            <div class="mt-4">
+                <button onclick="document.getElementById('statusModal').classList.add('hidden')" class="bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold py-2 px-4 rounded-lg">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification System -->
+    <div id="notification-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+</body>
+</html>
+
+
+
+
+

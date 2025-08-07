@@ -1,4 +1,3 @@
-# ParCo
 # Exchequer - Student Organization Financial Management Platform
 
 A modern, all-in-one financial and membership management platform designed specifically for student organizations, starting with college clubs, fraternities, and sororities.
